@@ -1,0 +1,8 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+
+version: "3"
+
+tasks:
+  default: { deps: [install] }
+  build: go build -v -a -trimpath -ldflags '-s -w' -o bin/efind.exe ./
+  install: go build -v -trimpath -ldflags '-s -w' -o D:/Users/bin/efind.exe ./

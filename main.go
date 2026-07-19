@@ -1,10 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -34,30 +33,11 @@ func main() {
 	result.Eval = eval
 
 	for _, name := range names {
-		p := Path{Name: name}
-		p.Full, p.Err = exec.LookPath(p.Name)
-		if eval && p.Err == nil {
-			if r, e := scoopFind(p.Name); e {
-				p.Real, p.Err = r, nil
-			} else if r, e := miseFind(p.Name); e {
-				p.Real, p.Err = r, nil
-			} else {
-				p.Real, p.Err = filepath.EvalSymlinks(p.Full)
-			}
-		}
-		if p.Real == p.Full {
-			p.Real = ""
-		}
-		if p.Err != nil {
-			if errors.Is(p.Err, exec.ErrNotFound) {
-				p.ErrMsg = "executable file not found"
-			} else {
-				p.ErrMsg = p.Err.Error()
-			}
-		}
+		p := Find(name, eval)
 		result.Length.Name = max(result.Length.Name, len(p.Name))
 		result.Length.Full = max(result.Length.Full, len(p.Full))
 		result.Length.Real = max(result.Length.Real, len(p.Real))
+		result.Length.Shim = max(result.Length.Shim, len(p.Shim))
 		result.Path = append(result.Path, p)
 	}
 
@@ -74,30 +54,50 @@ func main() {
 	}
 }
 
+func Find(name string, eval bool) (p Path) {
+	p.Name = name
+
+	if p.Name != "" {
+		p.Full, _ = exec.LookPath(p.Name)
+	}
+
+	if eval {
+		if p.Full != "" {
+			p.Real, _ = filepath.EvalSymlinks(p.Full)
+		}
+
+		if p.Real != "" {
+			p.Shim = shim(p.Real)
+		}
+
+		if p.Shim == p.Real {
+			p.Shim = ""
+		}
+
+		if p.Real == p.Full {
+			p.Real = ""
+		}
+	}
+
+	return
+}
+
 func linePrint(result Result, i int) {
 	p := result.Path[i]
-	var w io.Writer
-	if p.Err != nil {
-		w = os.Stderr
-	} else {
-		w = os.Stdout
-	}
 
-	if p.Err == nil && !result.Verbose {
-		if p.Real != "" {
-			fmt.Fprintf(w, "%s\n", p.Real)
-		} else {
-			fmt.Fprintf(w, "%s\n", p.Full)
-		}
-		return
-	}
-
-	if p.Err != nil {
+	if p.Full == "" {
 		if !result.NoErr {
-			fmt.Fprintf(w, "%s: %s\n", p.Name, p.ErrMsg)
+			fmt.Fprintf(os.Stderr, "%s: not found\n", p.Name)
 		}
 		return
 	}
+
+	if !result.Verbose {
+		fmt.Fprintf(os.Stdout, "%s\n", cmp.Or(p.Shim, p.Real, p.Full))
+		return
+	}
+
+	w := os.Stdout
 
 	// name
 	fmt.Fprintf(w, "%*s", -result.Length.Name, p.Name)
@@ -118,6 +118,14 @@ func linePrint(result Result, i int) {
 		}
 	}
 
+	if result.Length.Shim > 0 {
+		if p.Shim != "" {
+			fmt.Fprintf(w, " => %*s", -result.Length.Shim, p.Shim)
+		} else {
+			fmt.Fprintf(w, "    %*s", -result.Length.Shim, "")
+		}
+	}
+
 	fmt.Fprintln(w)
 }
 
@@ -129,30 +137,37 @@ type Result struct {
 		Name int
 		Full int
 		Real int
+		Shim int
 	}
 	Path []Path
 }
 
 type Path struct {
-	Name   string `json:"name"`
-	Full   string `json:"full,omitempty"`
-	Real   string `json:"real,omitempty"`
-	Err    error  `json:"-"`
-	ErrMsg string `json:"err,omitempty"`
+	Name string `json:"name"`
+	Full string `json:"full,omitempty"`
+	Real string `json:"real,omitempty"`
+	Shim string `json:"shim,omitempty"`
+
+	// Err    error  `json:"-"`
+	// ErrMsg string `json:"err,omitempty"`
 }
 
-func miseFind(name string) (string, bool) {
-	n, err := exec.Command("mise", "which", name).Output()
-	if err != nil {
-		return "", false
+func shim(name string) (r string) {
+	if name == "" {
+		return
 	}
-	return strings.TrimSpace(string(n)), true
+	if strings.Contains(name, "shims") {
+		if r = which("mise", name); r == "" || strings.Contains(r, "shims") {
+			r = which("scoop", name)
+		}
+	}
+	return
 }
 
-func scoopFind(name string) (string, bool) {
-	n, err := exec.Command("scoop", "which", name).Output()
+func which(command, name string) string {
+	n, err := exec.Command(command, "which", filepath.Base(name)).Output()
 	if err != nil {
-		return "", false
+		return ""
 	}
-	return strings.TrimSpace(string(n)), true
+	return strings.TrimSpace(string(n))
 }
